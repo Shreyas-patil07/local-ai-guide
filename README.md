@@ -1,377 +1,271 @@
-# Local AI Guide — Windows + AirLLM + Qwen3.8-27B
+# Local AI Guide — Ollama + Qwen2.5-Coder on Windows
 
-A reproducible, hardware-specific guide for running **Qwen3.8-27B through AirLLM** on Windows with an NVIDIA RTX 3050 Laptop GPU (4 GB VRAM).
+A hardware-specific guide for installing Ollama on Windows and running Qwen2.5-Coder locally on an NVIDIA RTX 3050 Laptop GPU with 4 GB VRAM.
 
-> **Status (verified 2026-10-11):** Qwen3.8-27B successfully generated text through `/v1/chat/completions` on the target Windows machine using `AIRLLM_CACHE=stream` and `AIRLLM_MAX_CONTEXT=1024`. The default TurboCache configuration failed with CUDA out-of-memory. Initially the response contained a visible `</think>` marker and repeated `OK`; after adding `enable_thinking=False` to the chat-template call, a repeat test returned exactly `OK`.
+> **Verified on 2026-10-11:** The model downloaded and ran successfully. Ollama reported the model using **100% GPU**, and a generation benchmark completed at **6.69 tokens/second** for 128 output tokens. See the measured results below; they are one run, not a multi-run average.
 
-## Target system
+## 1. Target system
 
 | Component | Observed value |
 |---|---|
-| OS | Windows 11 / Windows build 10.0.26300.9550 |
-| Python | 3.11.9 |
-| Git for Windows | 2.53.0.windows.2 |
+| OS | Windows 11, build 10.0.26300.9550 |
+| CPU | Intel Core i5-12450H |
+| RAM | 16 GB |
 | GPU | NVIDIA GeForce RTX 3050 Laptop GPU |
-| VRAM | Approximately 4 GB (PyTorch reported 4.3 GB) |
-| System RAM | 16 GB (reported by user) |
-| Free disk space before setup | Approximately 112 GB |
-| Workspace | `C:\AI\AirLLM-Server` |
-| Hugging Face cache | `C:\hf` |
-| Model ID | `Qwen/Qwen3.8-27B` |
-| API port | 8000 |
-| Context configuration tested for inference | 1024 tokens |
-| Compression configuration | 4-bit |
-| Layer cache mode tested for inference | `stream` (not `turbo`) |
+| Dedicated VRAM | 4 GB |
+| Model runtime | Ollama, llama.cpp runner |
+| Model | `qwen2.5-coder:3b-instruct-q4_K_M` |
+| Download size | 1.9 GB as shown by `ollama list` |
+| Runtime size | 2.2 GB as shown by `ollama ps` |
+| Observed context | 4096 tokens |
+| Free disk after previous cleanup | 109.98 GB |
 
-## Important reality check
+Hardware and performance details refer to this specific machine. Your results may differ depending on drivers, background applications, temperature, power mode, and prompt length.
 
-AirLLM streams model layers from storage; it does not turn this model into a small, fast local model. This 27B model is very demanding on a laptop with 16 GB RAM and 4 GB VRAM. Expect slow initial preparation, disk activity, memory pressure, and potentially low generation throughput. Keep sufficient disk space available.
+## 2. Why this model
 
-**Important for this machine:** the server's default `turbo` cache configuration reported about 4.24 GB VRAM in use at startup and failed during generation with CUDA out-of-memory. The verified smoke test used `AIRLLM_CACHE=stream` and a 1024-token context.
+The selected tag is **Qwen2.5-Coder 3B Instruct, Q4_K_M**. The instruct variant is intended for conversational prompts, code explanation, and coding assistance. The Ollama registry lists this tag at about **1.9 GB** and shows a 32K context capability for the tag, but the tested active session reported an effective context of **4096** in `ollama ps`. This guide sticks to the tested runtime configuration instead of assuming a larger active context.
 
-The server starts model loading in a background thread. An HTTP 200 from the health endpoint alone does **not** prove the model is ready.
+Model tag page: https://ollama.com/library/qwen2.5-coder/tags
 
-This procedure uses an **OpenAI-compatible API server**, not Ollama. It does not make `ollama launch claude --model qwen3.8:27b` run through AirLLM. Claude Code compatibility is not guaranteed by the setup described here.
+Exact tag: https://ollama.com/library/qwen2.5-coder:3b-instruct-q4_K_M
 
-## 1. Prerequisites
+## 3. Install Ollama on Windows
 
-Install and verify:
+### Option A — Official installer (recommended)
 
-- Python 3.11.x (the recorded version is **3.11.9**); add Python to PATH.
-- Git for Windows (recorded version **2.53.0.windows.2**).
-- A current NVIDIA Windows driver.
-- Approximately 100 GB or more of free SSD space is a prudent target for this checkpoint plus cache/sharding files. This is a practical buffer, not a universal hard requirement.
+1. Open the official Windows download page: https://ollama.com/download/windows
+2. Download and run the Windows installer.
+3. Complete the installation.
+4. Open a **new PowerShell window** so the updated PATH is loaded.
 
-Open **Command Prompt (CMD)** and run:
+### Option B — Install from PowerShell
 
-```bat
-python --version
-git --version
-nvidia-smi
-```
+Ollama also publishes this installation command on its Windows download page:
 
-The GPU should appear in `nvidia-smi`.
+~~~powershell
+irm https://ollama.com/install.ps1 | iex
+~~~
 
-## 2. Clone the server repository
+Use one installation method; you do not need to run both.
 
-```bat
-cd /d C:\
-mkdir AI 2>nul
-cd /d C:\AI
-git clone https://github.com/AIExperimentsKooth/AirLLM-Server.git
-cd /d C:\AI\AirLLM-Server
-dir install.bat
-```
+### Verify the installation
 
-**Do not combine commands on one line without a separator.** For example, `cd /d C:\AI\AirLLM-Servermkdir C:\hf` is a malformed command. Enter each command separately.
+~~~powershell
+ollama --version
+ollama list
+~~~
 
-Repository: https://github.com/AIExperimentsKooth/AirLLM-Server
+If `ollama` is not recognized, close and reopen PowerShell. If it still fails, confirm Ollama is installed through Windows Settings → Apps → Installed apps and use the official installer page above.
 
-## 3. Run the Windows installer
+Official source: https://ollama.com/download/windows
 
-The repository's `install.bat` installed a CPU-only PyTorch package on this system, despite its message claiming a CUDA-enabled install. Its optional Windows `bitsandbytes-windows` installation also caused a CUDA DLL error. The dependency correction below was needed on the target system.
+## 4. Download and run the exact model tag
 
-Run the installer from the repository directory:
+Run this in PowerShell:
 
-```bat
-cd /d C:\AI\AirLLM-Server
-mkdir C:\hf 2>nul
-set "HF_HOME=C:\hf"
-set "AIRLLM_DEVICE=cuda"
-set "AIRLLM_COMPRESSION=4bit"
-set "AIRLLM_MAX_CONTEXT=4096"
-install.bat
-```
+~~~powershell
+ollama run qwen2.5-coder:3b-instruct-q4_K_M
+~~~
 
-Wait until it exits. Complete the following dependency steps before starting the model.
+Ollama downloads the model if it is not already cached, then opens an interactive chat. The tag used during this setup appeared in `ollama list` as:
 
-## 4. Install the tested CUDA-enabled PyTorch version
+~~~text
+NAME                                ID              SIZE
+qwen2.5-coder:3b-instruct-q4_K_M    f72c60cabf62    1.9 GB
+~~~
 
-The final tested versions were:
+Do not install every quantization variant. This guide uses the single tag above.
 
-- `torch==2.6.0+cu124`
-- `torchvision==0.21.0+cu124`
-- `torchaudio==2.6.0+cu124`
-- CUDA wheel index: `https://download.pytorch.org/whl/cu124`
+### First coding prompt
 
-From `C:\AI\AirLLM-Server`, run:
+At the model prompt, enter:
 
-```bat
-venv\Scripts\python.exe -m pip uninstall -y torch torchvision torchaudio
-venv\Scripts\python.exe -m pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
-```
+~~~text
+Write a Python function that checks whether a string is a palindrome.
 
-The PyTorch wheel is multi-gigabyte. Ensure the download completes.
+Requirements:
+- Use type hints.
+- Ignore spaces, punctuation, and capitalization.
+- Include three test cases.
+- Explain time and space complexity.
+~~~
 
-> **Version note:** An earlier `torch==2.13.0+cu132` build also detected CUDA, but it was replaced during troubleshooting. The final verified environment was **PyTorch 2.6.0+cu124**. Stick to this tested combination unless you intentionally test another stack.
+To leave an interactive session, enter /bye if supported by the running CLI, or press Ctrl+D/Ctrl+C in the terminal.
 
-## 5. Remove the incompatible Windows bitsandbytes package
+## 5. Verify GPU usage
 
-The installer added `bitsandbytes-windows==0.37.5`, which attempted to load `libbitsandbytes_cuda116.dll` and failed. The fix was to uninstall both package variants and install the regular pinned package:
+Start the model, send a prompt, and while the model is still loaded open a **second PowerShell window**:
 
-```bat
-venv\Scripts\python.exe -m pip uninstall -y bitsandbytes-windows bitsandbytes
-venv\Scripts\python.exe -m pip install bitsandbytes==0.43.3
-```
+~~~powershell
+ollama ps
+~~~
 
-Do **not** reinstall `bitsandbytes-windows`.
+During the verified session, output included:
 
-The successful dependency check in this session printed:
+~~~text
+NAME                                ID              SIZE    PROCESSOR    CONTEXT    RUNNER
+qwen2.5-coder:3b-instruct-q4_K_M    f72c60cabf62    2.2 GB  100% GPU     4096       llamacpp
+~~~
 
-```text
-PyTorch: 2.6.0+cu124
-CUDA available: True
-GPU: NVIDIA GeForce RTX 3050 Laptop GPU
-bitsandbytes: 0.43.3
-NF4 available: True
-```
+Interpretation:
 
-Verify with this exact command:
+- **100% GPU** means Ollama reported the model fully on the GPU for that session.
+- **CPU/GPU split** would indicate that only part of the model is offloaded to the GPU.
+- **CONTEXT 4096** is the effective context reported for this observed run.
+- The UNTIL column indicates when the model will be unloaded after an idle period.
 
-```bat
-venv\Scripts\python.exe -c "import torch; import bitsandbytes as bnb; import bitsandbytes.functional as F; print('PyTorch:',torch.__version__); print('CUDA available:',torch.cuda.is_available()); print('GPU:',torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NOT DETECTED'); print('bitsandbytes:',bnb.__version__); print('NF4 available:',hasattr(F,'quantize_nf4'))"
-```
+The model may unload after it has been idle. Run a prompt first, then check `ollama ps`.
 
-Do not proceed if CUDA is false or the imports fail.
+## 6. Reproducible generation benchmark
 
-## 6. Patch the server's PyTorch VRAM property bug
+This benchmark uses Ollama's local generate API. It measures the model's generation duration and total request duration separately.
 
-The first server start failed in the model-load thread with:
+Run in a second PowerShell window while the Ollama service is running:
 
-```text
-AttributeError: 'torch._C._CudaDeviceProperties' object has no attribute 'total_mem'. Did you mean: 'total_memory'?
-```
-
-Back up the file and open it:
-
-```bat
-cd /d C:\AI\AirLLM-Server
-copy server.py server.py.bak
-notepad server.py
-```
-
-In Notepad press **Ctrl+H**:
-- Find: `total_mem`
-- Replace with: `total_memory`
-- Select **Replace All**, save, and close.
-
-The affected expression should use the valid PyTorch property:
-
-```python
-f"{torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB VRAM")
-```
-
-Keep `server.py.bak` as a rollback copy. This patch is based on the observed traceback.
-
-## 7. Start the server with the tested low-VRAM settings
-
-For the configuration that passed the basic inference test, use **PowerShell** (not CMD) and start `server.py` directly. Keep these environment variables in the same PowerShell window that launches Python:
-
-```powershell
-Set-Location "C:\AI\AirLLM-Server"
-$env:HF_HOME = "C:\hf"
-$env:HF_HUB_CACHE = "C:\hf\hub"
-$env:TRANSFORMERS_CACHE = "C:\hf\hub"
-$env:AIRLLM_MODEL = "Qwen/Qwen3.8-27B"
-$env:AIRLLM_DEVICE = "cuda"
-$env:AIRLLM_CACHE = "stream"
-$env:AIRLLM_MAX_CONTEXT = "1024"
-
-Write-Host "HF_HOME=$env:HF_HOME"
-Write-Host "Cache=$env:AIRLLM_CACHE"
-Write-Host "Context=$env:AIRLLM_MAX_CONTEXT"
-& ".\venv\Scripts\python.exe" ".\server.py"
-```
-
-Expected startup settings:
-
-```text
-Context:   1024
-Cache:     stream
-Model ready: Qwen/Qwen3.8-27B
-```
-
-Do not expect to see `Initializing TurboCache` in this configuration. The ordinary `run.bat`/server defaults previously selected `turbo` and a larger context; on this 4 GB GPU, that setup failed during inference with CUDA out-of-memory.
-
-The Hugging Face cache variables matter. The existing model files are in `C:\hf\hub`; if the server instead points at `C:\Users\<user>\.cache\huggingface`, AirLLM may try to prepare another copy and fail its disk-space check. Verify that the following directory exists before starting:
-
-```text
-C:\hf\hub\models--Qwen--Qwen3.8-27B\snapshots\1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0\splitted_model.4bit\
-```
-
-The model's compressed layer files were fully prepared in an earlier run (68/68). With the cache set correctly, the later server restart found the layer files already present.
-
-- Keep the server terminal open.
-- Keep the laptop plugged in.
-- Close RAM-intensive apps and monitor disk/RAM usage.
-- If C: becomes critically low (for example, less than 15 GB free), stop intentionally with Ctrl+C rather than risk filling the system drive.
-- The Hugging Face unauthenticated warning is not by itself fatal. Never commit a Hugging Face token to this repository.
-- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` produced a Windows/PyTorch warning that expandable segments are unsupported on this platform. It is omitted from the recommended launch commands because it was not needed for the successful smoke test.
-
-Check remaining C: space from a second PowerShell window:
-
-```powershell
-$d = Get-PSDrive C
-'C: free space: {0:N1} GB' -f ($d.Free / 1GB)
-```
-
-
-## 8. Chat template: suppress visible thinking markers
-
-The first successful request returned `OK`, a visible `</think>` marker, and another `OK`. The following chat-template change was then tested successfully; the same request returned only `OK`.
-
-Stop the server first. In PowerShell:
-
-```powershell
-Set-Location "C:\AI\AirLLM-Server"
-$path = "C:\AI\AirLLM-Server\server.py"
-$old = 'return state.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)'
-$new = 'return state.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)'
-$text = [System.IO.File]::ReadAllText($path)
-
-if (-not $text.Contains($old)) {
-    throw "Expected chat-template line not found; no change made."
-}
-
-Copy-Item $path "$path.before-thinking-fix.bak" -Force
-$text = $text.Replace($old, $new)
-$utf8 = [System.Text.UTF8Encoding]::new($false)
-[System.IO.File]::WriteAllText($path, $text, $utf8)
-Select-String -Path $path -Pattern "def build_chat_prompt|enable_thinking=False"
-```
-
-Restart with the PowerShell launch settings in the next section, then retest. This fix changes prompt formatting; it does not reduce the model's core memory requirements.
-
-## 8. Test the API
-
-Leave the server running and open a second PowerShell window.
-
-Health endpoint:
-
-```powershell
-Invoke-RestMethod "http://127.0.0.1:8000/health"
-```
-
-List available models:
-
-```powershell
-Invoke-RestMethod "http://127.0.0.1:8000/v1/models"
-```
-
-A health response only proves the web server is alive. Check the server terminal for `Model ready` and any traceback, then run an actual generation request:
-
-```powershell
+~~~powershell
 $body = @{
-    model = "Qwen/Qwen3.8-27B"
-    messages = @(
-        @{ role = "user"; content = "Reply with exactly: OK" }
-    )
-    max_tokens = 8
-    temperature = 0
+    model = "qwen2.5-coder:3b-instruct-q4_K_M"
+    prompt = "Write a Python palindrome checker with type hints and three test cases. Keep the explanation brief."
+    stream = $false
+    options = @{
+        temperature = 0
+        num_predict = 128
+    }
 } | ConvertTo-Json -Depth 5
 
-$response = Invoke-RestMethod `
-    -Uri "http://127.0.0.1:8000/v1/chat/completions" `
-    -Method Post `
-    -ContentType "application/json" `
-    -Body $body
-$response | ConvertTo-Json -Depth 8
-```
+$r = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/generate" -Method Post -ContentType "application/json" -Body $body
 
-**Observed successful smoke test (2026-10-11):** the endpoint returned `finish_reason: stop`, `prompt_tokens: 57`, `completion_tokens: 6`, and `total_tokens: 63`. Initially the assistant content was `OK\n</think>\n\nOK`. After adding `enable_thinking=False` to `build_chat_prompt`, a repeat request returned exactly `OK`.
+$evalSeconds = $r.eval_duration / 1e9
+$tokensPerSecond = if ($evalSeconds -gt 0) {
+    [math]::Round($r.eval_count / $evalSeconds, 2)
+} else { 0 }
 
-### Observed performance on the target laptop
+Write-Host "`n--- Benchmark Results ---"
+Write-Host "Model: $($r.model)"
+Write-Host "Prompt tokens: $($r.prompt_eval_count)"
+Write-Host "Generated tokens: $($r.eval_count)"
+Write-Host "Generation time: $([math]::Round($evalSeconds, 2)) sec"
+Write-Host "Generation speed: $tokensPerSecond tokens/sec"
+Write-Host "Total request time: $([math]::Round($r.total_duration / 1e9, 2)) sec"
+Write-Host "`n--- Generated Response ---"
+Write-Host $r.response
+~~~
 
-A real generation request succeeded, but the measured generation speed was extremely low:
+The numbers depend on the prompt, token cap, and system state. This is a simple smoke benchmark, not a standardized performance test. The script deliberately caps output at 128 tokens, so an answer can stop partway through a code block. Increase `num_predict` for a longer answer, understanding that it will take longer.
 
-```text
-Timestamp:          2026-10-11 21:59:33
-Prompt tokens:      32
-Generated tokens:   28
-Generation time:    1678.6 seconds (27 min 58.6 sec)
-Calculated rate:    0.0167 tokens/second (~1 token/minute)
-HTTP result:        200 OK
-```
+### Measured result on this laptop
 
-The server rounded throughput to `0.0 tok/s`; the rate above is calculated as `28 / 1678.6`. This timing is the reported generation duration for that request, not a controlled multi-run benchmark. At the same rate, 100 output tokens would take about 100 minutes, but that is only a rough extrapolation.
+The following values were observed on 2026-10-11 for the prompt above:
 
-**Conclusion:** this confirms functional inference, not usable interactive performance. Keep stream mode as the known-working configuration; do not expect the 27B model to be practical for everyday coding chats on this 16 GB RAM / 4 GB VRAM laptop with the current setup. A smaller local model is the more suitable next step for responsiveness. If performance is retested, record several runs separately and include generation tokens, generation duration, GPU memory, and system RAM.
+| Metric | Observed result |
+|---|---:|
+| Model | `qwen2.5-coder:3b-instruct-q4_K_M` |
+| Generated tokens | 128 |
+| Generation duration (`eval_duration`) | 19.14 seconds |
+| Generation rate | 6.69 tokens/second |
+| Total request duration | 39.88 seconds |
+| GPU placement from `ollama ps` | 100% GPU |
+| Runtime context from `ollama ps` | 4096 |
 
-## 9. Known problems and fixes
+Calculation: 128 tokens ÷ 19.14 seconds = approximately **6.69 tokens/second**. Total request time includes prompt processing and other request overhead, so it is not the same as generation duration.
 
-| Symptom | Cause observed | Fix |
-|---|---|---|
-| `install.bat` not recognized | CMD was in `C:\AI`, not the cloned repository; a `cd` and `mkdir` command had been concatenated | Run `cd /d C:\AI\AirLLM-Server`, verify with `dir install.bat` |
-| `PyTorch: 2.14.1+cpu`, CUDA false | Installer selected CPU-only torch on this machine | Install pinned PyTorch/vision/audio 2.6.0 CUDA 12.4 wheels |
-| `libbitsandbytes_cuda116.dll` missing | Incompatible `bitsandbytes-windows 0.37.5` package | Remove both variants and install `bitsandbytes==0.43.3`; verify imports |
-| `total_mem` attribute error | Server used incorrect PyTorch CUDA property | Change `total_mem` to `total_memory` in `server.py` |
-| `/health` returns 200 but inference does not work | API server can start while model loading crashes in a background thread | Inspect model-load logs, check models endpoint, and run a real completion |
-| Slow first launch | Checkpoint download and layer quantization/sharding are I/O intensive | Leave process running; monitor progress, internet, RAM, and disk |
-| CUDA out-of-memory during inference in `turbo` mode | TurboCache pinned too much memory for this 4 GB VRAM GPU; logs reported around 4.24 GB VRAM used before generation | Stop the server, set `AIRLLM_CACHE=stream` and `AIRLLM_MAX_CONTEXT=1024` in PowerShell, and launch `server.py` directly |
-| `NotEnoughSpaceException` references `C:\Users\<user>\.cache\huggingface` | Hugging Face cache variables were not applied to the server process, so it inspected a different cache path | Set `HF_HOME=C:\hf` and `HF_HUB_CACHE=C:\hf\hub` in the same PowerShell session before launching |
-| `expandable_segments not supported on this platform` | This PyTorch CUDA allocator option is unsupported in the observed Windows environment | It was non-fatal; omit `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` from the recommended launch steps |
+The response shown in the terminal stopped partway through a Python code example at the 128-token cap. This is expected for a benchmark that intentionally limits output; it does not by itself indicate an Ollama failure.
 
-## 10. Compatible clients and network safety
+## 7. Useful everyday commands
 
-The server exposes an OpenAI-compatible endpoint at:
+~~~powershell
+# Show installed models
+ollama list
 
-- Base URL: `http://127.0.0.1:8000/v1`
-- Model ID: `Qwen/Qwen3.8-27B`
-- API key: the basic local test does not require one.
+# Check models currently loaded in memory
+ollama ps
 
-Clients that let you configure an OpenAI-compatible base URL may connect if their API feature set matches the server implementation. **Do not assume Claude Code works with this endpoint.** Tool calls, streaming, structured outputs, and long-running coding-agent workflows need to be tested individually.
+# Run the chosen model
+ollama run qwen2.5-coder:3b-instruct-q4_K_M
 
-The server's logged default listener is `0.0.0.0:8000`, which makes it reachable on network interfaces. For machine-local-only use, bind to `127.0.0.1` if supported by the server's configuration. Do not expose an unauthenticated model API to untrusted networks.
+# Show model details
+ollama show qwen2.5-coder:3b-instruct-q4_K_M
 
-## 11. Reproducibility snapshot
+# Remove this model's downloaded files
+ollama rm qwen2.5-coder:3b-instruct-q4_K_M
+~~~
 
-Versions and settings explicitly observed during the session:
+Do not run the remove command unless you intend to delete the downloaded model.
 
-```text
-Windows build:          10.0.26300.9550
-Python:                 3.11.9
-Git for Windows:        2.53.0.windows.2
-GPU:                    NVIDIA GeForce RTX 3050 Laptop GPU
-PyTorch:                2.6.0+cu124
-torchvision:             0.21.0+cu124
-torchaudio:              2.6.0+cu124
-bitsandbytes:           0.43.3
-airllm:                 3.3.0
-transformers:            5.12.1
-Model:                  Qwen/Qwen3.8-27B
-Compression:            4bit
-Max context:            1024 (tested)
-Cache mode:             stream (tested)
-API port:               8000
-HF_HOME:                C:\hf
-Workspace:              C:\AI\AirLLM-Server
-```
+## 8. Local API
 
-For a fuller environment snapshot from the installed environment:
+Ollama's local API is served at **http://127.0.0.1:11434** on the tested setup.
 
-```bat
-venv\Scripts\python.exe -m pip freeze > requirements-windows-lock.txt
-```
+Simple health check (the root response only confirms the HTTP service is reachable):
 
-Review the resulting file before committing it. It pins transitive dependencies exactly as installed on that machine.
+~~~powershell
+Invoke-WebRequest "http://127.0.0.1:11434"
+~~~
 
-## Upstream references
+Generate a single response from PowerShell:
 
-- AirLLM OpenAI-compatible server: https://github.com/AIExperimentsKooth/AirLLM-Server
-- Qwen3.8-27B checkpoint: https://huggingface.co/Qwen/Qwen3.8-27B
-- PyTorch previous-version installation selector: https://pytorch.org/get-started/previous-versions/
-- bitsandbytes project: https://github.com/bitsandbytes-foundation/bitsandbytes
+~~~powershell
+$body = @{
+    model = "qwen2.5-coder:3b-instruct-q4_K_M"
+    prompt = "Write a Python function to add two integers."
+    stream = $false
+} | ConvertTo-Json -Depth 5
+
+$response = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/generate" -Method Post -ContentType "application/json" -Body $body
+$response.response
+~~~
+
+The API example uses the local service and does not require an API key for a standard local request. Keep the service local unless you intentionally configure and secure remote access. Do not expose an unauthenticated local model API to untrusted networks.
+
+## 9. Troubleshooting
+
+| Symptom | What to check |
+|---|---|
+| `ollama` is not recognized | Reopen PowerShell after installation; verify Ollama is installed in Windows Settings; rerun the official installer if needed. |
+| Model download fails | Check internet connectivity and free disk space, then rerun `ollama run qwen2.5-coder:3b-instruct-q4_K_M`. |
+| Model does not appear in `ollama ps` | Send a prompt first; the model may have unloaded after being idle. |
+| `ollama ps` reports CPU/GPU split | Close other GPU-intensive applications and check the NVIDIA driver and available VRAM. |
+| Response ends mid-code | Check the requested output cap. The benchmark uses `num_predict = 128`; increase it for longer answers. |
+| Slow or variable output speed | Repeat the same prompt more than once, keep the laptop plugged in, close memory-heavy applications, and record each run. Avoid comparing one short run with a different prompt length. |
+| GPU is unusually hot | Ensure laptop vents are unobstructed, use a hard surface, and reduce sustained load if temperatures remain high. |
+
+## 10. Model storage and cleanup
+
+Ollama stores downloaded model data in its configured models directory. On a standard Windows user installation, check the user profile's Ollama directory before manually removing data. The actual location can be changed with the `OLLAMA_MODELS` environment variable.
+
+Prefer Ollama commands for model cleanup:
+
+~~~powershell
+ollama list
+ollama rm qwen2.5-coder:3b-instruct-q4_K_M
+~~~
+
+To uninstall Ollama itself, use Windows Settings → Apps → Installed apps → Ollama → Uninstall. After stopping/uninstalling it, inspect any remaining Ollama data directory before deleting it. Removing the model or uninstalling the application is destructive and should be done only if you no longer need the downloads.
+
+No Hugging Face cache or separate model sharding step is required for the Ollama workflow described in this guide.
+
+## 11. Security and privacy notes
+
+- The commands in this guide use Ollama locally on the same Windows machine.
+- Model downloads require internet access; ordinary local inference uses the local Ollama process.
+- The API port used in the examples is 11434. Do not forward it to the public internet or expose it to untrusted networks without an appropriate security layer.
+- Do not paste secrets, API keys, private keys, or credentials into prompts.
+- Only install Ollama from the official download page: https://ollama.com/download/windows
 
 ## Completion checklist
 
-- [x] Python and Git available
-- [x] CUDA-enabled PyTorch verified on RTX 3050 Laptop GPU
-- [x] bitsandbytes imports and NF4 function detected
-- [x] Server property bug identified and documented
-- [x] Initial download/sharding confirmed to progress
-- [x] Full compressed layer preparation completed (68/68)
-- [x] `/v1/models` lists the configured model
-- [x] Real `/v1/chat/completions` request returned a response in stream mode
-- [x] Chat template updated with `enable_thinking=False`; retest returned exactly `OK`
+- [x] Ollama installed and CLI responds
+- [x] Exact model tag downloaded: `qwen2.5-coder:3b-instruct-q4_K_M`
+- [x] `ollama ps` verified 100% GPU placement on the observed run
+- [x] Local API generation request succeeded
+- [x] 128-token benchmark recorded at 6.69 tokens/second
+- [ ] Run repeated benchmarks and record median speed
+- [ ] Validate coding quality against a small set of real Python/backend tasks
 
-Update this checklist only after verifying each item on the target machine.
+## References
+
+- Ollama Windows download: https://ollama.com/download/windows
+- Qwen2.5-Coder tags: https://ollama.com/library/qwen2.5-coder/tags
+- Exact selected model tag: https://ollama.com/library/qwen2.5-coder:3b-instruct-q4_K_M
+- Ollama documentation: https://docs.ollama.com/
