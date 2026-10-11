@@ -278,7 +278,24 @@ $response = Invoke-RestMethod `
 $response | ConvertTo-Json -Depth 8
 ```
 
-**Observed successful smoke test (2026-10-11):** the endpoint returned `finish_reason: stop`, `prompt_tokens: 57`, `completion_tokens: 6`, and `total_tokens: 63`. The assistant content was `OK\n</think>\n\nOK`. This proves the current stream-mode configuration can generate text, but the visible `</think>` marker and repeated answer should be investigated separately.
+**Observed successful smoke test (2026-10-11):** the endpoint returned `finish_reason: stop`, `prompt_tokens: 57`, `completion_tokens: 6`, and `total_tokens: 63`. Initially the assistant content was `OK\n</think>\n\nOK`. After adding `enable_thinking=False` to `build_chat_prompt`, a repeat request returned exactly `OK`.
+
+### Observed performance on the target laptop
+
+A real generation request succeeded, but the measured generation speed was extremely low:
+
+```text
+Timestamp:          2026-10-11 21:59:33
+Prompt tokens:      32
+Generated tokens:   28
+Generation time:    1678.6 seconds (27 min 58.6 sec)
+Calculated rate:    0.0167 tokens/second (~1 token/minute)
+HTTP result:        200 OK
+```
+
+The server rounded throughput to `0.0 tok/s`; the rate above is calculated as `28 / 1678.6`. This timing is the reported generation duration for that request, not a controlled multi-run benchmark. At the same rate, 100 output tokens would take about 100 minutes, but that is only a rough extrapolation.
+
+**Conclusion:** this confirms functional inference, not usable interactive performance. Keep stream mode as the known-working configuration; do not expect the 27B model to be practical for everyday coding chats on this 16 GB RAM / 4 GB VRAM laptop with the current setup. A smaller local model is the more suitable next step for responsiveness. If performance is retested, record several runs separately and include generation tokens, generation duration, GPU memory, and system RAM.
 
 ## 9. Known problems and fixes
 
