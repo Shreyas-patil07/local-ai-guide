@@ -2,7 +2,7 @@
 
 A reproducible, hardware-specific guide for running **Qwen3.8-27B through AirLLM** on Windows with an NVIDIA RTX 3050 Laptop GPU (4 GB VRAM).
 
-> **Status (verified 2026-10-11):** Qwen3.8-27B completed a real `/v1/chat/completions` request on the target Windows machine using `AIRLLM_CACHE=stream` and `AIRLLM_MAX_CONTEXT=1024`. The default TurboCache configuration failed with CUDA out-of-memory. The successful smoke test returned `finish_reason: stop` and 6 completion tokens, but the visible output contained `</think>` and a repeated `OK`; treat this as proof of basic inference, not yet a polished chat experience.
+> **Status (verified 2026-10-11):** Qwen3.8-27B successfully generated text through `/v1/chat/completions` on the target Windows machine using `AIRLLM_CACHE=stream` and `AIRLLM_MAX_CONTEXT=1024`. The default TurboCache configuration failed with CUDA out-of-memory. Initially the response contained a visible `</think>` marker and repeated `OK`; after adding `enable_thinking=False` to the chat-template call, a repeat test returned exactly `OK`.
 
 ## Target system
 
@@ -216,6 +216,32 @@ $d = Get-PSDrive C
 ```
 
 
+## 8. Chat template: suppress visible thinking markers
+
+The first successful request returned `OK`, a visible `</think>` marker, and another `OK`. The following chat-template change was then tested successfully; the same request returned only `OK`.
+
+Stop the server first. In PowerShell:
+
+```powershell
+Set-Location "C:\AI\AirLLM-Server"
+$path = "C:\AI\AirLLM-Server\server.py"
+$old = 'return state.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)'
+$new = 'return state.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)'
+$text = [System.IO.File]::ReadAllText($path)
+
+if (-not $text.Contains($old)) {
+    throw "Expected chat-template line not found; no change made."
+}
+
+Copy-Item $path "$path.before-thinking-fix.bak" -Force
+$text = $text.Replace($old, $new)
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllText($path, $text, $utf8)
+Select-String -Path $path -Pattern "def build_chat_prompt|enable_thinking=False"
+```
+
+Restart with the PowerShell launch settings in the next section, then retest. This fix changes prompt formatting; it does not reduce the model's core memory requirements.
+
 ## 8. Test the API
 
 Leave the server running and open a second PowerShell window.
@@ -329,6 +355,6 @@ Review the resulting file before committing it. It pins transitive dependencies 
 - [x] Full compressed layer preparation completed (68/68)
 - [x] `/v1/models` lists the configured model
 - [x] Real `/v1/chat/completions` request returned a response in stream mode
-- [ ] Response formatting checked for unwanted visible `</think>` marker and duplicate answer
+- [x] Chat template updated with `enable_thinking=False`; retest returned exactly `OK`
 
 Update this checklist only after verifying each item on the target machine.
