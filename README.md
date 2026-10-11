@@ -2,7 +2,7 @@
 
 A hardware-specific guide for installing Ollama on Windows and running Qwen2.5-Coder locally on an NVIDIA RTX 3050 Laptop GPU with 4 GB VRAM.
 
-> **Verified on 2026-10-11:** The model downloaded and ran successfully. Ollama reported the model using **100% GPU**, and a generation benchmark completed at **6.69 tokens/second** for 128 output tokens. See the measured results below; they are one run, not a multi-run average.
+> **Verified on 2026-10-11:** Qwen2.5-Coder 3B Instruct Q4_K_M and 7B Instruct Q3_K_S both ran successfully in Ollama. The 3B model reached **6.69 tokens/second** with 100% GPU placement; the 7B model reached **5.83 tokens/second** with a 40% CPU / 60% GPU split. These are single observed runs, not multi-run averages.
 
 ## 1. Target system
 
@@ -171,6 +171,49 @@ The following values were observed on 2026-10-11 for the prompt above:
 Calculation: 128 tokens ÷ 19.14 seconds = approximately **6.69 tokens/second**. Total request time includes prompt processing and other request overhead, so it is not the same as generation duration.
 
 The response shown in the terminal stopped partway through a Python code example at the 128-token cap. This is expected for a benchmark that intentionally limits output; it does not by itself indicate an Ollama failure.
+
+### Second model tested: Qwen2.5-Coder 7B Instruct Q3_K_S
+
+A second run was tested on the same laptop using this model tag:
+
+~~~powershell
+ollama pull qwen2.5-coder:7b-instruct-q3_K_S
+ollama run qwen2.5-coder:7b-instruct-q3_K_S
+~~~
+
+During the observed session, `ollama ps` reported:
+
+~~~text
+NAME                                ID              SIZE    PROCESSOR          CONTEXT    RUNNER
+qwen2.5-coder:7b-instruct-q3_K_S    748645786a08    3.9 GB  40%/60% CPU/GPU    4096       llamacpp
+~~~
+
+The same 128-token generation benchmark prompt was then run with `num_predict = 128`. Observed results:
+
+| Metric | Observed result |
+|---|---:|
+| Model | `qwen2.5-coder:7b-instruct-q3_K_S` |
+| Generated tokens | 128 |
+| Generation duration | 21.94 seconds |
+| Generation rate | 5.83 tokens/second |
+| Total request duration | 28.65 seconds |
+| GPU placement from `ollama ps` | 60% GPU / 40% CPU |
+| Runtime context from `ollama ps` | 4096 |
+
+### Side-by-side results
+
+| Metric | 3B Q4_K_M | 7B Q3_K_S |
+|---|---:|---:|
+| Download size in Ollama | 1.9 GB | 3.5 GB listed tag size; 3.9 GB shown as loaded runtime size |
+| Generated tokens | 128 | 128 |
+| Generation duration | 19.14 s | 21.94 s |
+| Generation speed | 6.69 tok/s | 5.83 tok/s |
+| Total request duration | 39.88 s | 28.65 s |
+| Processor placement | 100% GPU | 40% CPU / 60% GPU |
+
+In these single runs, the 7B model generated tokens about **13% slower** than 3B. Its reported total request duration was shorter, despite the slower generation rate; total duration includes prompt processing and other overhead, so do not treat total latency from one run as a stable winner. Neither result is a multi-run benchmark, and the 128-token cap truncated the generated code examples. Run each model several times with the same prompt and settings before making a final choice.
+
+**Practical takeaway:** the 3B model currently offers the higher measured generation rate and fits entirely on the GPU. The 7B model is viable to test for coding quality, but it requires CPU offloading on this 4 GB VRAM laptop. Whether the 7B model is the better daily driver depends on code correctness and output quality, not model size alone.
 
 ## 7. Useful everyday commands
 
