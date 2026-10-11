@@ -2,7 +2,7 @@
 
 A reproducible, hardware-specific guide for running **Qwen3.8-27B through AirLLM** on Windows with an NVIDIA RTX 3050 Laptop GPU (4 GB VRAM).
 
-> **Status:** CUDA and bitsandbytes imports were verified, and the captured model-preparation log reached layer 30/68 (44%). A full end-to-end inference response has not yet been confirmed. Use the verification checklist before considering the setup complete.
+> **Status (verified 2026-10-11):** Qwen3.8-27B completed a real `/v1/chat/completions` request on the target Windows machine using `AIRLLM_CACHE=stream` and `AIRLLM_MAX_CONTEXT=1024`. The default TurboCache configuration failed with CUDA out-of-memory. The successful smoke test returned `finish_reason: stop` and 6 completion tokens, but the visible output contained `</think>` and a repeated `OK`; treat this as proof of basic inference, not yet a polished chat experience.
 
 ## Target system
 
@@ -19,12 +19,15 @@ A reproducible, hardware-specific guide for running **Qwen3.8-27B through AirLLM
 | Hugging Face cache | `C:\hf` |
 | Model ID | `Qwen/Qwen3.8-27B` |
 | API port | 8000 |
-| Context configuration | 4096 tokens |
+| Context configuration tested for inference | 1024 tokens |
 | Compression configuration | 4-bit |
+| Layer cache mode tested for inference | `stream` (not `turbo`) |
 
 ## Important reality check
 
 AirLLM streams model layers from storage; it does not turn this model into a small, fast local model. This 27B model is very demanding on a laptop with 16 GB RAM and 4 GB VRAM. Expect slow initial preparation, disk activity, memory pressure, and potentially low generation throughput. Keep sufficient disk space available.
+
+**Important for this machine:** the server's default `turbo` cache configuration reported about 4.24 GB VRAM in use at startup and failed during generation with CUDA out-of-memory. The verified smoke test used `AIRLLM_CACHE=stream` and a 1024-token context.
 
 The server starts model loading in a background thread. An HTTP 200 from the health endpoint alone does **not** prove the model is ready.
 
@@ -160,66 +163,96 @@ f"{torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB VRAM")
 
 Keep `server.py.bak` as a rollback copy. This patch is based on the observed traceback.
 
-## 7. Start the server and prepare the model
+## 7. Start the server with the tested low-VRAM settings
 
-Use one CMD window for the server:
+For the configuration that passed the basic inference test, use **PowerShell** (not CMD) and start `server.py` directly. Keep these environment variables in the same PowerShell window that launches Python:
 
-```bat
-cd /d C:\AI\AirLLM-Server
-set "HF_HOME=C:\hf"
-set "AIRLLM_MODEL=Qwen/Qwen3.8-27B"
-set "AIRLLM_DEVICE=cuda"
-set "AIRLLM_COMPRESSION=4bit"
-set "AIRLLM_MAX_CONTEXT=4096"
-run.bat
+```powershell
+Set-Location "C:\AI\AirLLM-Server"
+$env:HF_HOME = "C:\hf"
+$env:HF_HUB_CACHE = "C:\hf\hub"
+$env:TRANSFORMERS_CACHE = "C:\hf\hub"
+$env:AIRLLM_MODEL = "Qwen/Qwen3.8-27B"
+$env:AIRLLM_DEVICE = "cuda"
+$env:AIRLLM_CACHE = "stream"
+$env:AIRLLM_MAX_CONTEXT = "1024"
+
+Write-Host "HF_HOME=$env:HF_HOME"
+Write-Host "Cache=$env:AIRLLM_CACHE"
+Write-Host "Context=$env:AIRLLM_MAX_CONTEXT"
+& ".\venv\Scripts\python.exe" ".\server.py"
 ```
 
-The server log should report CUDA-enabled PyTorch, the NVIDIA GPU, the selected model, compression, and context.
-
-The first run downloads the source checkpoint and prepares 4-bit layer files beneath a path similar to:
+Expected startup settings:
 
 ```text
-C:\hf\hub\models--Qwen--Qwen3.8-27B\snapshots\<snapshot>\splitted_model.4bit\
+Context:   1024
+Cache:     stream
+Model ready: Qwen/Qwen3.8-27B
 ```
 
-The captured log showed 68 layer/file preparation steps with some individual shard downloads reaching several gigabytes. At the latest captured progress, it had reached **30/68 (44%)** and was loading shard 9 of 18. **This is only a progress snapshot; completion has not yet been confirmed.**
+Do not expect to see `Initializing TurboCache` in this configuration. The ordinary `run.bat`/server defaults previously selected `turbo` and a larger context; on this 4 GB GPU, that setup failed during inference with CUDA out-of-memory.
+
+The Hugging Face cache variables matter. The existing model files are in `C:\hf\hub`; if the server instead points at `C:\Users\<user>\.cache\huggingface`, AirLLM may try to prepare another copy and fail its disk-space check. Verify that the following directory exists before starting:
+
+```text
+C:\hf\hub\models--Qwen--Qwen3.8-27B\snapshots\1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0\splitted_model.4bit\
+```
+
+The model's compressed layer files were fully prepared in an earlier run (68/68). With the cache set correctly, the later server restart found the layer files already present.
 
 - Keep the server terminal open.
-- Keep the laptop plugged in and connected to the internet.
-- Close RAM-intensive apps.
-- Monitor disk space and Windows memory usage.
+- Keep the laptop plugged in.
+- Close RAM-intensive apps and monitor disk/RAM usage.
 - If C: becomes critically low (for example, less than 15 GB free), stop intentionally with Ctrl+C rather than risk filling the system drive.
-- The Hugging Face unauthenticated warning is not by itself fatal. A Hugging Face token can help with rate limits; never commit a token to this repository.
+- The Hugging Face unauthenticated warning is not by itself fatal. Never commit a Hugging Face token to this repository.
+- `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` produced a Windows/PyTorch warning that expandable segments are unsupported on this platform. It is omitted from the recommended launch commands because it was not needed for the successful smoke test.
 
-Check remaining C: space from a second CMD window:
+Check remaining C: space from a second PowerShell window:
 
-```bat
-powershell -NoProfile -Command "$d=Get-PSDrive C; 'C: free space: {0:N1} GB' -f ($d.Free/1GB)"
+```powershell
+$d = Get-PSDrive C
+'C: free space: {0:N1} GB' -f ($d.Free / 1GB)
 ```
+
 
 ## 8. Test the API
 
-Leave the server running and open a second CMD window.
+Leave the server running and open a second PowerShell window.
 
 Health endpoint:
 
-```bat
-curl.exe http://127.0.0.1:8000/health
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8000/health"
 ```
 
 List available models:
 
-```bat
-curl.exe http://127.0.0.1:8000/v1/models
+```powershell
+Invoke-RestMethod "http://127.0.0.1:8000/v1/models"
 ```
 
-A health response of HTTP 200 only means the web server is alive. The model loads in a background thread, so check the server terminal for model-ready logs and any traceback. Then make a real completion request:
+A health response only proves the web server is alive. Check the server terminal for `Model ready` and any traceback, then run an actual generation request:
 
-```bat
-curl.exe -X POST http://127.0.0.1:8000/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"Qwen/Qwen3.8-27B\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: AirLLM is working.\"}],\"max_tokens\":40}"
+```powershell
+$body = @{
+    model = "Qwen/Qwen3.8-27B"
+    messages = @(
+        @{ role = "user"; content = "Reply with exactly: OK" }
+    )
+    max_tokens = 8
+    temperature = 0
+} | ConvertTo-Json -Depth 5
+
+$response = Invoke-RestMethod `
+    -Uri "http://127.0.0.1:8000/v1/chat/completions" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+$response | ConvertTo-Json -Depth 8
 ```
 
-Success means the endpoint returns JSON containing a non-empty assistant message. Record response latency and check RAM/VRAM. If it fails, save the traceback and latest server output.
+**Observed successful smoke test (2026-10-11):** the endpoint returned `finish_reason: stop`, `prompt_tokens: 57`, `completion_tokens: 6`, and `total_tokens: 63`. The assistant content was `OK\n</think>\n\nOK`. This proves the current stream-mode configuration can generate text, but the visible `</think>` marker and repeated answer should be investigated separately.
 
 ## 9. Known problems and fixes
 
@@ -231,6 +264,9 @@ Success means the endpoint returns JSON containing a non-empty assistant message
 | `total_mem` attribute error | Server used incorrect PyTorch CUDA property | Change `total_mem` to `total_memory` in `server.py` |
 | `/health` returns 200 but inference does not work | API server can start while model loading crashes in a background thread | Inspect model-load logs, check models endpoint, and run a real completion |
 | Slow first launch | Checkpoint download and layer quantization/sharding are I/O intensive | Leave process running; monitor progress, internet, RAM, and disk |
+| CUDA out-of-memory during inference in `turbo` mode | TurboCache pinned too much memory for this 4 GB VRAM GPU; logs reported around 4.24 GB VRAM used before generation | Stop the server, set `AIRLLM_CACHE=stream` and `AIRLLM_MAX_CONTEXT=1024` in PowerShell, and launch `server.py` directly |
+| `NotEnoughSpaceException` references `C:\Users\<user>\.cache\huggingface` | Hugging Face cache variables were not applied to the server process, so it inspected a different cache path | Set `HF_HOME=C:\hf` and `HF_HUB_CACHE=C:\hf\hub` in the same PowerShell session before launching |
+| `expandable_segments not supported on this platform` | This PyTorch CUDA allocator option is unsupported in the observed Windows environment | It was non-fatal; omit `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` from the recommended launch steps |
 
 ## 10. Compatible clients and network safety
 
@@ -261,7 +297,8 @@ airllm:                 3.3.0
 transformers:            5.12.1
 Model:                  Qwen/Qwen3.8-27B
 Compression:            4bit
-Max context:            4096
+Max context:            1024 (tested)
+Cache mode:             stream (tested)
 API port:               8000
 HF_HOME:                C:\hf
 Workspace:              C:\AI\AirLLM-Server
@@ -289,8 +326,9 @@ Review the resulting file before committing it. It pins transitive dependencies 
 - [x] bitsandbytes imports and NF4 function detected
 - [x] Server property bug identified and documented
 - [x] Initial download/sharding confirmed to progress
-- [ ] Full model preparation completed without traceback
-- [ ] `/v1/models` confirms the configured model is ready
-- [ ] Real `/v1/chat/completions` request returns a response
+- [x] Full compressed layer preparation completed (68/68)
+- [x] `/v1/models` lists the configured model
+- [x] Real `/v1/chat/completions` request returned a response in stream mode
+- [ ] Response formatting checked for unwanted visible `</think>` marker and duplicate answer
 
 Update this checklist only after verifying each item on the target machine.
